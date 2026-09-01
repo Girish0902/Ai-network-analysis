@@ -1,0 +1,13 @@
+[project]
+name = "investigative-ai-platform"
+version = "0.1.0"
+description = "AI-Assisted Criminal Investigation & Intelligence Platform - Backend"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

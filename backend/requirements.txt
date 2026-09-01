@@ -1,0 +1,32 @@
+# AI-Assisted Criminal Investigation & Intelligence Platform
+# Phase 0
+
+# --- Core ---
+fastapi>=0.115.0,<0.116
+uvicorn[standard]>=0.34.0,<0.35
+pydantic>=2.7.0,<3
+pydantic-settings>=2.4.0,<3
+email-validator>=2.1.0,<3
+
+# --- Database ---
+SQLAlchemy>=2.0.0,<3
+psycopg2-binary>=2.9.9,<3
+
+# --- Authentication ---
+python-jose[cryptography]>=3.3.0,<4
+passlib[bcrypt]>=1.7.4,<2
+bcrypt==4.0.1
+
+# --- Phase 1.1: Evidence Storage & Ingestion ---
+minio>=7.2.0,<8
+pyclamd>=0.3.23,<1
+python-multipart>=0.0.9,<1
+
+# --- Phase 1.2: Document & Page Router / Parsing ---
+pymupdf>=1.24.0,<2
+openpyxl>=3.1.0,<4
+pandas>=2.2.0,<3
+
+# --- Testing ---
+pytest>=8.2.0,<9
+httpx>=0.27.0,<1
