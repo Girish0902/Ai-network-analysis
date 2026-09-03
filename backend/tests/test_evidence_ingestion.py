@@ -3,17 +3,13 @@ import hashlib
 import pytest
 
 from tests.conftest import (
-    ADMIN_PASSWORD,
-    ADMIN_USERNAME,
     INVESTIGATOR_1,
     INVESTIGATOR_2,
-    TEST_ENGINE,
     client,
     login_headers,
+    supabase,
 )
 from app.core.audit import validate_chain
-from app.models.entities import AuditTrail
-from sqlalchemy.orm import Session
 
 CASE = {"case_id": "EVID-CASE-9001", "title": "Ingestion Fixture Case", "description": "fixture"}
 
@@ -58,8 +54,7 @@ def _sha256(data: bytes) -> str:
 def setup_case():
     inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
     resp = client.post("/api/v1/cases/create", json=CASE, headers=inv1)
-    if resp.status_code not in (201, 409):
-        assert False, resp.text
+    assert resp.status_code in (201, 409), resp.text
     return inv1
 
 
@@ -126,7 +121,7 @@ def test_download_url_without_access_forbidden(setup_case):
     assert resp.status_code == 403
 
 
-def test_stream_roundtrip_local_backend(setup_case):
+def test_stream_roundtrip(setup_case):
     data = _valid_jpeg() + b"RT-UNIQUE-ROUNDTRIP"
     up = client.post(
         f"/api/v1/cases/{CASE['case_id']}/evidence/upload",
@@ -141,17 +136,19 @@ def test_stream_roundtrip_local_backend(setup_case):
     assert stream.headers["content-type"] == "image/jpeg"
 
 
-def test_download_url_in_local_mode_rejected(setup_case):
-    data = _valid_pdf() + b"LOCAL-MODE-URL-CHECK-PDF"
+def test_download_url_returns_signed_url(setup_case):
+    data = _valid_pdf() + b"URL-CHECK-PDF"
     up = client.post(
         f"/api/v1/cases/{CASE['case_id']}/evidence/upload",
-        files={"file": ("local.pdf", data, "application/octet-stream")},
+        files={"file": ("url.pdf", data, "application/octet-stream")},
         headers=setup_case,
     )
     assert up.status_code == 201, up.text
     doc_id = up.json()["document_id"]
     resp = client.get(f"/api/v1/cases/{CASE['case_id']}/evidence/{doc_id}/download-url", headers=setup_case)
-    assert resp.status_code == 409
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["url"]
+    assert resp.json()["expires_in_seconds"] > 0
 
 
 def test_audit_chain_valid_after_evidence_events(setup_case):
@@ -162,10 +159,15 @@ def test_audit_chain_valid_after_evidence_events(setup_case):
         headers=setup_case,
     )
     assert up.status_code == 201, up.text
-    with Session(TEST_ENGINE) as db:
-        valid, issue = validate_chain(db)
-        assert valid is True, issue
-        event_types = [row.action_type for row in db.query(AuditTrail).all()]
+    valid, issue = validate_chain(supabase)
+    assert valid is True, issue
+    events = (
+        supabase.table("audit_trails")
+        .select("action_type")
+        .order("event_id", asc=True)
+        .execute()
+    ).data
+    event_types = [e["action_type"] for e in events]
     assert "EVIDENCE_UPLOADED" in event_types
     assert "CASE_CREATED" in event_types
 
@@ -180,3 +182,30 @@ def test_duplicate_upload_conflict(setup_case):
     assert first.status_code == 201, first.text
     second = client.post(f"/api/v1/cases/{CASE['case_id']}/evidence/upload", **kwargs)
     assert second.status_code == 409
+
+
+def test_list_evidence_lists_uploaded_documents(setup_case):
+    data = _valid_csv() + b"LIST-FIXTURE-UNIQUE-CSV"
+    up = client.post(
+        f"/api/v1/cases/{CASE['case_id']}/evidence/upload",
+        files={"file": ("ledger.csv", data, "application/octet-stream")},
+        headers=setup_case,
+    )
+    assert up.status_code == 201, up.text
+    resp = client.get(f"/api/v1/cases/{CASE['case_id']}/evidence", headers=setup_case)
+    assert resp.status_code == 200, resp.text
+    docs = resp.json()
+    assert isinstance(docs, list)
+    assert any(d["original_filename"] == "ledger.csv" for d in docs)
+    assert any(d["sha256_hash"] == _sha256(data) for d in docs)
+
+
+def test_list_evidence_requires_access():
+    inv2 = login_headers(INVESTIGATOR_2["username"], INVESTIGATOR_2["password"])
+    resp = client.get(f"/api/v1/cases/{CASE['case_id']}/evidence", headers=inv2)
+    assert resp.status_code == 403
+
+
+def test_list_evidence_requires_auth(setup_case):
+    resp = client.get(f"/api/v1/cases/{CASE['case_id']}/evidence")
+    assert resp.status_code == 401

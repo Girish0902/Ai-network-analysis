@@ -1,29 +1,19 @@
-import hashlib
 import io
 
 import pymupdf
 import pytest
 from openpyxl import Workbook
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from app.core.audit import validate_chain
-from app.models.entities import AuditTrail, EvidenceDocument, ProcessingJob
 from tests.conftest import (
-    ADMIN_PASSWORD,
-    ADMIN_USERNAME,
     INVESTIGATOR_1,
     INVESTIGATOR_2,
-    TEST_ENGINE,
     client,
     login_headers,
+    supabase,
 )
 
 CASE = {"case_id": "RTR-CASE-2026-001", "title": "Document Router Fixture", "description": "fixture"}
-
-
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def _make_digital_pdf(n_pages: int = 1, footer: str = "") -> bytes:
@@ -138,7 +128,6 @@ def test_process_tabular_csv_routes_to_tabular(setup_case):
     assert table["rows"]
 
 
-
 def test_process_scanned_pdf_marks_ocr_pending(setup_case):
     data = _make_scanned_like_pdf()
     up, proc = _upload_and_process(setup_case, "fir_scanned.pdf", data)
@@ -181,14 +170,25 @@ def test_process_audit_chain_valid(setup_case):
     data = _make_xlsx()
     up, proc = _upload_and_process(setup_case, "chain.xlsx", data)
     assert proc.status_code == 201, proc.text
-    with Session(TEST_ENGINE) as db:
-        valid, issue = validate_chain(db)
-        assert valid is True, issue
-        job = db.scalar(
-            select(ProcessingJob).order_by(ProcessingJob.id.desc()).limit(1)
-        )
-        assert job is not None
-        assert job.status == "COMPLETED"
-        assert job.schema_version == "1.0.0"
-        event_types = [row.action_type for row in db.query(AuditTrail).all()]
+    valid, issue = validate_chain(supabase)
+    assert valid is True, issue
+
+    jobs = (
+        supabase.table("processing_jobs")
+        .select("status", "schema_version")
+        .order("id", desc=True)
+        .limit(1)
+        .execute()
+    ).data
+    assert jobs
+    assert jobs[0]["status"] == "COMPLETED"
+    assert jobs[0]["schema_version"] == "1.0.0"
+
+    events = (
+        supabase.table("audit_trails")
+        .select("action_type")
+        .order("event_id", asc=True)
+        .execute()
+    ).data
+    event_types = [e["action_type"] for e in events]
     assert "EVIDENCE_PROCESSED" in event_types

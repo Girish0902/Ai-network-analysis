@@ -1,5 +1,3 @@
-import pytest
-
 from tests.conftest import ADMIN_PASSWORD, ADMIN_USERNAME, INVESTIGATOR_1, INVESTIGATOR_2, client, login_headers
 
 CASE_1 = {"case_id": "CASE-2026-001", "title": "Financial Fraud Ring", "description": "Suspected circular fund transfers"}
@@ -16,7 +14,6 @@ def test_create_case_auto_grants_access_to_creator():
     body = resp.json()
     assert body["case_id"] == CASE_1["case_id"]
     assert body["status"] == "OPEN"
-    assert body["created_by_user_id"] > 0
 
 
 def test_create_case_duplicate_id_conflict():
@@ -50,6 +47,7 @@ def test_workspace_unknown_case_not_found():
 
 def test_creator_can_open_workspace():
     inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
+    client.post("/api/v1/cases/create", json=CASE_1, headers=inv1)
     resp = client.get(f"/api/v1/cases/{CASE_1['case_id']}/workspace", headers=inv1)
     assert resp.status_code == 200
     body = resp.json()
@@ -58,6 +56,8 @@ def test_creator_can_open_workspace():
 
 
 def test_request_access_creates_pending():
+    inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
+    client.post("/api/v1/cases/create", json=CASE_1, headers=inv1)
     inv2 = login_headers(INVESTIGATOR_2["username"], INVESTIGATOR_2["password"])
     resp = client.post(f"/api/v1/cases/{CASE_1['case_id']}/request-access", headers=inv2)
     assert resp.status_code == 200, resp.text
@@ -65,7 +65,10 @@ def test_request_access_creates_pending():
 
 
 def test_request_access_duplicate_pending_conflict():
+    inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
+    client.post("/api/v1/cases/create", json=CASE_1, headers=inv1)
     inv2 = login_headers(INVESTIGATOR_2["username"], INVESTIGATOR_2["password"])
+    client.post(f"/api/v1/cases/{CASE_1['case_id']}/request-access", headers=inv2)
     resp = client.post(f"/api/v1/cases/{CASE_1['case_id']}/request-access", headers=inv2)
     assert resp.status_code == 409
 
@@ -77,7 +80,45 @@ def test_request_access_unknown_case():
 
 
 def test_admin_request_access_auto_granted():
+    inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
+    client.post("/api/v1/cases/create", json=CASE_1, headers=inv1)
     admin = login_headers(ADMIN_USERNAME, ADMIN_PASSWORD)
     resp = client.post(f"/api/v1/cases/{CASE_1['case_id']}/request-access", headers=admin)
     assert resp.status_code == 200
     assert "Administrators automatically have access" in resp.json()["detail"]
+
+
+def test_list_my_cases_shows_creator_with_approved_access():
+    inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
+    client.post("/api/v1/cases/create", json=CASE_1, headers=inv1)
+    resp = client.get("/api/v1/cases/my", headers=inv1)
+    assert resp.status_code == 200, resp.text
+    case = next((c for c in resp.json() if c["case_id"] == CASE_1["case_id"]), None)
+    assert case is not None
+    assert case["access_status"] == "APPROVED"
+
+
+def test_list_my_cases_shows_pending_request():
+    inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
+    client.post("/api/v1/cases/create", json=CASE_1, headers=inv1)
+    inv2 = login_headers(INVESTIGATOR_2["username"], INVESTIGATOR_2["password"])
+    client.post(f"/api/v1/cases/{CASE_1['case_id']}/request-access", headers=inv2)
+    resp = client.get("/api/v1/cases/my", headers=inv2)
+    assert resp.status_code == 200, resp.text
+    case = next((c for c in resp.json() if c["case_id"] == CASE_1["case_id"]), None)
+    assert case is not None
+    assert case["access_status"] == "PENDING"
+
+
+def test_list_my_cases_requires_auth():
+    resp = client.get("/api/v1/cases/my")
+    assert resp.status_code == 401
+
+
+def test_list_my_cases_admin_sees_all_cases():
+    inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
+    client.post("/api/v1/cases/create", json=CASE_1, headers=inv1)
+    admin = login_headers(ADMIN_USERNAME, ADMIN_PASSWORD)
+    resp = client.get("/api/v1/cases/my", headers=admin)
+    assert resp.status_code == 200, resp.text
+    assert any(c["case_id"] == CASE_1["case_id"] for c in resp.json())

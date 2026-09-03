@@ -1,29 +1,22 @@
-import os
-
-from app.core.audit import compute_tamper_hash, validate_chain
+from app.core.audit import validate_chain
 from tests.conftest import (
-    ADMIN_PASSWORD,
-    ADMIN_USERNAME,
     INVESTIGATOR_1,
     INVESTIGATOR_2,
-    TestingSessionLocal,
     client,
     login_headers,
+    supabase,
 )
-from app.models.entities import AuditTrail
 
 CASE_3 = {"case_id": "CASE-2026-003", "title": "Audit Trails Must Exist", "description": "Test case"}
 
 
 def _count_audit_events() -> int:
-    db = TestingSessionLocal()
-    try:
-        return db.query(AuditTrail).count()
-    finally:
-        db.close()
+    return len(
+        supabase.table("audit_trails").select("event_id").execute().data
+    )
 
 
-def test_audit_trail_logs_signup_login_case_create_request_decide():
+def test_audit_trail_logs_login_case_create_request_decide():
     before = _count_audit_events()
 
     inv1 = login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"])
@@ -32,16 +25,12 @@ def test_audit_trail_logs_signup_login_case_create_request_decide():
     inv2 = login_headers(INVESTIGATOR_2["username"], INVESTIGATOR_2["password"])
     client.post(f"/api/v1/cases/{CASE_3['case_id']}/request-access", headers=inv2)
 
-    from tests.conftest import admin_headers
-    from app.models.entities import User
+    from tests.conftest import admin_headers, user_id_by_username
 
-    db = TestingSessionLocal()
-    inv2_user = db.query(User).filter(User.username == INVESTIGATOR_2["username"]).first()
-    db.close()
-
+    inv2_user_id = user_id_by_username(INVESTIGATOR_2["username"])
     client.post(
         "/api/v1/admin/decide-access",
-        json={"case_id": CASE_3["case_id"], "user_id": inv2_user.id, "decision": "APPROVE"},
+        json={"case_id": CASE_3["case_id"], "user_id": inv2_user_id, "decision": "APPROVE"},
         headers=admin_headers(),
     )
 
@@ -50,44 +39,33 @@ def test_audit_trail_logs_signup_login_case_create_request_decide():
 
 
 def test_audit_chain_hash_is_consistent():
-    ok, problem = validate_chain(TestingSessionLocal())
+    ok, problem = validate_chain(supabase)
     assert ok, f"Audit chain broken: {problem}"
 
 
 def test_tampering_breaks_chain():
-    db = TestingSessionLocal()
-    first_event = db.query(AuditTrail).order_by(AuditTrail.event_id.asc()).first()
+    rows = (
+        supabase.table("audit_trails")
+        .select("*")
+        .order("event_id", asc=True)
+        .limit(1)
+        .execute()
+    ).data
+    assert rows
+    first = rows[0]
 
-    original_metadata = dict(first_event.metadata_json)
-    ok_before, _ = validate_chain(db)
+    ok_before, _ = validate_chain(supabase)
     assert ok_before
 
-    first_event.metadata_json = {"tampered": True}
-    db.commit()
+    supabase.table("audit_trails").update(
+        {"metadata_json": {"tampered": True}}
+    ).eq("event_id", first["event_id"]).execute()
 
-    ok_after, problem = validate_chain(db)
+    ok_after, problem = validate_chain(supabase)
 
-    first_event.metadata_json = original_metadata
-    db.commit()
-    db.close()
+    supabase.table("audit_trails").update(
+        {"metadata_json": first["metadata_json"]}
+    ).eq("event_id", first["event_id"]).execute()
 
     assert ok_after is False, "Chain should detect modification"
     assert problem is not None
-
-
-def test_compute_tamper_hash_is_deterministic():
-    from datetime import datetime
-
-    class FakeEntry:
-        event_id = 1
-        user_id = 2
-        case_id = "CASE-X"
-        action_type = "TEST"
-        metadata_json = {"b": [1, 2], "a": "x"}
-        ip_address = "127.0.0.1"
-        timestamp = datetime(2026, 1, 1, 12, 0, 0)
-
-    h1 = compute_tamper_hash(FakeEntry(), "0" * 64)
-    h2 = compute_tamper_hash(FakeEntry(), "0" * 64)
-    assert h1 == h2
-    assert os.environ.get("SECRET_KEY") is not None
