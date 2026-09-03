@@ -29,3 +29,17 @@ class CaseWorkspace(BaseModel):
     role: str
     access_status: Optional[str] = None
     message: Optional[str] = None
+
+
+class MyCase(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    case_id: str
+    title: str
+    description: Optional[str]
+    status: str
+    created_by_user_id: int
+    created_at: datetime
+    access_status: Optional[str] = None
+    role: str = "INVESTIGATOR"
