@@ -1,13 +1,12 @@
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from supabase import Client
 
 from app.core.audit import write_audit
-from app.core.database import get_db
+from app.core.supabase import get_supabase
 from app.deps import require_admin
-from app.models.entities import AccessStatus, Case, CaseAccess, User, utcnow
 from app.schemas.admin import AccessDecision, AccessDecisionOut, PendingRequestOut
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -20,45 +19,49 @@ def _client_ip(request: Request) -> Optional[str]:
 @router.get("/pending-requests", response_model=list[PendingRequestOut])
 def pending_requests(
     request: Request,
-    db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
+    supabase: Client = Depends(get_supabase),
+    admin: dict = Depends(require_admin),
 ):
     rows = (
-        db.execute(
-            select(CaseAccess, User, Case)
-            .join(User, CaseAccess.user_id == User.id)
-            .join(Case, CaseAccess.case_id == Case.id)
-            .where(CaseAccess.access_status == AccessStatus.PENDING.value)
-            .order_by(CaseAccess.requested_at.asc())
-        )
-        .all()
+        supabase.table("case_accesses")
+        .select("*, profiles!case_accesses_user_id_fkey(*), cases(*)")
+        .eq("access_status", "PENDING")
+        .order("requested_at", asc=True)
+        .execute()
     )
-    return [
-        PendingRequestOut(
-            user_id=ca.user_id,
-            username=user.username,
-            badge_number=user.badge_number,
-            case_id=case.case_id,
-            status=ca.access_status,
-            created_at=ca.requested_at,
+
+    results = []
+    for row in rows.data:
+        profile = row.get("profiles")
+        case = row.get("cases")
+        if not profile or not case:
+            continue
+        results.append(
+            PendingRequestOut(
+                user_id=profile["id"],
+                username=profile["username"],
+                badge_number=profile["badge_number"],
+                case_id=case["case_id"],
+                status=row["access_status"],
+                created_at=row.get("requested_at"),
+            )
         )
-        for ca, user, case in rows
-    ]
+    return results
 
 
 @router.post("/decide-access", response_model=AccessDecisionOut)
 def decide_access(
     payload: AccessDecision,
     request: Request,
-    db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
+    supabase: Client = Depends(get_supabase),
+    admin: dict = Depends(require_admin),
 ):
     decision = payload.decision.strip().upper()
     mapping = {
-        "APPROVE": AccessStatus.APPROVED,
-        "REJECT": AccessStatus.REJECTED,
-        "APPROVED": AccessStatus.APPROVED,
-        "REJECTED": AccessStatus.REJECTED,
+        "APPROVE": "APPROVED",
+        "REJECT": "REJECTED",
+        "APPROVED": "APPROVED",
+        "REJECTED": "REJECTED",
     }
     resolved = mapping.get(decision)
     if resolved is None:
@@ -67,48 +70,58 @@ def decide_access(
             detail="decision must be APPROVE or REJECT",
         )
 
-    case = db.scalar(select(Case).where(Case.case_id == payload.case_id))
-    if case is None:
+    case = supabase.table("cases").select("*").eq("case_id", payload.case_id).execute()
+    if not case.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case not found")
 
-    user = db.get(User, payload.user_id)
-    if user is None:
+    case_data = case.data[0]
+
+    user = supabase.table("profiles").select("*").eq("id", payload.user_id).execute()
+    if not user.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    access = db.scalar(
-        select(CaseAccess).where(
-            CaseAccess.user_id == user.id,
-            CaseAccess.case_id == case.id,
-        )
+    user_data = user.data[0]
+
+    access = (
+        supabase.table("case_accesses")
+        .select("*")
+        .eq("user_id", user_data["id"])
+        .eq("case_id", case_data["id"])
+        .execute()
     )
-    if access is None:
+    if not access.data:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Access request not found")
-    if access.access_status == AccessStatus.APPROVED.value:
+
+    access_data = access.data[0]
+    if access_data.get("access_status") == "APPROVED":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Access already approved")
-    if access.access_status == AccessStatus.REJECTED.value:
+    if access_data.get("access_status") == "REJECTED":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Access already rejected")
 
-    new_status = AccessStatus.APPROVED.value if resolved == AccessStatus.APPROVED else AccessStatus.REJECTED.value
-    access.access_status = new_status
-    access.reviewed_at = utcnow()
-    access.reviewed_by_admin_id = admin.id
-    db.commit()
+    supabase.table("case_accesses").update(
+        {
+            "access_status": resolved,
+            "reviewed_at": datetime.utcnow().isoformat(),
+            "reviewed_by_admin_id": admin["id"],
+        }
+    ).eq("id", access_data["id"]).execute()
 
     write_audit(
-        db,
+        supabase,
         action_type="CASE_ACCESS_DECIDED",
-        user_id=admin.id,
-        case_id=case.case_id,
+        user_id=admin["id"],
+        case_id=case_data["case_id"],
         metadata={
-            "target_user_id": user.id,
-            "target_username": user.username,
-            "decision": new_status,
+            "target_user_id": user_data["id"],
+            "target_username": user_data["username"],
+            "decision": resolved,
         },
         ip_address=_client_ip(request),
     )
+
     return AccessDecisionOut(
-        user_id=user.id,
-        case_id=case.case_id,
-        status=new_status,
-        message=f"Access {new_status.lower()} for {user.username}",
+        user_id=user_data["id"],
+        case_id=case_data["case_id"],
+        status=resolved,
+        message=f"Access {resolved.lower()} for {user_data['username']}",
     )
