@@ -3,19 +3,18 @@ from tests.conftest import (
     ADMIN_USERNAME,
     INVESTIGATOR_1,
     INVESTIGATOR_2,
-    TestingSessionLocal,
     admin_headers,
     client,
     login_headers,
+    user_id_by_username,
 )
-from app.models.entities import User
 
 _counter = [0]
 
 
 def _next_case_id() -> str:
     _counter[0] += 1
-    return f"CASE-2026-{900 + _counter[0]}"
+    return f"CASE-2026-{910 + _counter[0]}"
 
 
 def _setup() -> str:
@@ -34,13 +33,8 @@ def _setup() -> str:
     return case_id
 
 
-def _inv2_id() -> int:
-    db = TestingSessionLocal()
-    try:
-        user = db.query(User).filter(User.username == INVESTIGATOR_2["username"]).first()
-        return user.id
-    finally:
-        db.close()
+def _inv2_id() -> str:
+    return user_id_by_username(INVESTIGATOR_2["username"])
 
 
 def test_pending_requests_admin_only():
@@ -60,7 +54,6 @@ def test_pending_requests_forbidden_for_investigator():
 
 
 def test_pending_requests_requires_auth():
-    _setup()
     resp = client.get("/api/v1/admin/pending-requests")
     assert resp.status_code == 401
 

@@ -1,5 +1,3 @@
-import pytest
-
 from tests.conftest import (
     ADMIN_BADGE,
     ADMIN_EMAIL,
@@ -8,6 +6,8 @@ from tests.conftest import (
     INVESTIGATOR_1,
     INVESTIGATOR_2,
     client,
+    login_headers,
+    supabase,
 )
 
 NEW_USER = {
@@ -18,18 +18,25 @@ NEW_USER = {
 }
 
 
+def _delete_user(username: str) -> None:
+    profile = supabase.table("profiles").select("id").eq("username", username).execute()
+    if profile.data:
+        supabase.auth.admin.delete_user(profile.data[0]["id"])
+        supabase.table("profiles").delete().eq("id", profile.data[0]["id"]).execute()
+
+
 def test_signup_creates_investigator_default_role():
+    _delete_user(NEW_USER["username"])
     resp = client.post("/api/v1/auth/signup", json=NEW_USER)
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["role"] == "INVESTIGATOR"
     assert body["username"] == NEW_USER["username"]
     assert body["badge_number"] == NEW_USER["badge_number"]
-    assert "hashed_password" not in body
 
 
 def test_signup_rejects_duplicate():
-    resp = client.post("/api/v1/auth/signup", json=NEW_USER)
+    resp = client.post("/api/v1/auth/signup", json=INVESTIGATOR_1)
     assert resp.status_code == 409
 
 
@@ -85,14 +92,7 @@ def test_login_unknown_user_returns_401():
 
 
 def test_login_deactivated_user_forbidden():
-    from tests.conftest import TestingSessionLocal
-    from app.models.entities import User
-
-    db = TestingSessionLocal()
-    user = db.query(User).filter(User.username == INVESTIGATOR_1["username"]).first()
-    user.is_active = False
-    db.commit()
-    db.close()
+    supabase.table("profiles").update({"is_active": False}).eq("username", INVESTIGATOR_1["username"]).execute()
 
     resp = client.post(
         "/api/v1/auth/login",
@@ -100,11 +100,7 @@ def test_login_deactivated_user_forbidden():
     )
     assert resp.status_code == 403
 
-    db = TestingSessionLocal()
-    user = db.query(User).filter(User.username == INVESTIGATOR_1["username"]).first()
-    user.is_active = True
-    db.commit()
-    db.close()
+    supabase.table("profiles").update({"is_active": True}).eq("username", INVESTIGATOR_1["username"]).execute()
 
 
 def test_me_endpoint_rejects_no_token():
@@ -113,9 +109,10 @@ def test_me_endpoint_rejects_no_token():
 
 
 def test_me_endpoint_returns_current_user():
-    from tests.conftest import login_headers
-
-    resp = client.get("/api/v1/auth/me", headers=login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"]))
+    resp = client.get(
+        "/api/v1/auth/me",
+        headers=login_headers(INVESTIGATOR_1["username"], INVESTIGATOR_1["password"]),
+    )
     assert resp.status_code == 200
     assert resp.json()["username"] == INVESTIGATOR_1["username"]
 

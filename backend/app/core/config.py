@@ -14,11 +14,9 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "AI-Assisted Criminal Investigation & Intelligence Platform"
     API_V1_PREFIX: str = "/api/v1"
 
-    DATABASE_URL: str = "postgresql+psycopg2://investigation:investigation@localhost:5432/investigation"
-
-    SECRET_KEY: SecretStr = SecretStr("LocalDevOnly")
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: SecretStr = SecretStr("")
 
     ADMIN_USERNAME: str = "superadmin"
     ADMIN_EMAIL: str = "admin@example.in"
@@ -27,27 +25,18 @@ class Settings(BaseSettings):
 
     CLAMAV_HOST: str = "localhost"
     CLAMAV_PORT: int = 3310
-
-    STORAGE_BACKEND: str = "local"
-    LOCAL_STORAGE_ROOT: str = "uploads"
-    MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ROOT_USER: str = "minioadmin"
-    MINIO_ROOT_PASSWORD: str = "minioadmin"
-    MINIO_BUCKET_NAME: str = "evidence-vault"
-    MINIO_SECURE: bool = False
-
     CLAMAV_ENABLED: bool = False
 
-    @field_validator("DATABASE_URL", mode="after")
+    @field_validator("SUPABASE_URL", mode="after")
     @classmethod
-    def validate_database_url(cls, value: str) -> str:
+    def validate_supabase_url(cls, value: str) -> str:
         if not value.strip():
-            raise ValueError("DATABASE_URL must not be empty")
+            raise ValueError("SUPABASE_URL must not be empty")
         return value.strip()
 
     @property
-    def secret_key(self) -> str:
-        return self.SECRET_KEY.get_secret_value()
+    def supabase_service_role_key(self) -> str:
+        return self.SUPABASE_SERVICE_ROLE_KEY.get_secret_value()
 
 
 settings = Settings()
